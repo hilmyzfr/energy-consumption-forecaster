@@ -244,4 +244,4 @@ docker run -p 8000:8000 energy-forecaster
   and automatically set the special_event flag
 - Drift monitoring to detect when model performance degrades
 - Streamlit dashboard for visualising predictions and plausibility flags
-- GitHub Actions for automated testing
+- GitHub Actions for automated testing 
