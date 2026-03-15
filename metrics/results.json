@@ -8,18 +8,18 @@
     "MAE": 47.83,
     "RMSE": 78.15,
     "train_time_sec": 0,
-    "inference_time_sec": 0.092
+    "inference_time_sec": 0.091
   },
   "knn": {
     "MAE": 24.34,
     "RMSE": 33.46,
-    "train_time_sec": 0.001,
-    "inference_time_sec": 0.005
+    "train_time_sec": 0.002,
+    "inference_time_sec": 0.004
   },
   "mlp": {
     "MAE": 19.2,
     "RMSE": 29.3,
-    "train_time_sec": 2.074,
+    "train_time_sec": 2.127,
     "inference_time_sec": 0.0
   }
 }

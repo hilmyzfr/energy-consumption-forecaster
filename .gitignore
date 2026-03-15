@@ -213,3 +213,4 @@ dbt_energy/logs/
 dbt_energy/.user.yml
 dbt_energy/energy.duckdb
 dbt_energy/energy.duckdb.wal
+models/

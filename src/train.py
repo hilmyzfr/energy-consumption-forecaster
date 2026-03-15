@@ -1,7 +1,9 @@
 import json
 import time
+import os
 import numpy as np
 import pandas as pd
+import joblib
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
@@ -196,6 +198,21 @@ def train():
     with open('metrics/results.json', 'w') as f:
         json.dump(metrics, f, indent=2)
     print("\nMetrics saved to metrics/results.json")
+
+    # save models, scaler, and training data for the API
+    models_dir = 'models'
+    os.makedirs(models_dir, exist_ok=True)
+
+    joblib.dump(knn, os.path.join(models_dir, 'knn.joblib'))
+    joblib.dump(mlp, os.path.join(models_dir, 'mlp.joblib'))
+    joblib.dump(scaler, os.path.join(models_dir, 'scaler.joblib'))
+
+    # save full data (train + test) for baseline and plausibility checks
+    full_data = pd.concat([train_data, test_data])
+    full_data.to_parquet(os.path.join(models_dir, 'full_data.parquet'))
+
+    print(f"Models saved to {models_dir}/")
+    print("  knn.joblib, mlp.joblib, scaler.joblib, full_data.parquet")
 
 
 if __name__ == '__main__':

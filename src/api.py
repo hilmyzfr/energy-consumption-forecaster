@@ -1,42 +1,31 @@
 import sys
+import os
 import holidays
 import numpy as np
 import pandas as pd
+import joblib
 from fastapi import FastAPI
 from pydantic import BaseModel
-from sklearn.neighbors import KNeighborsRegressor
-from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
 
 sys.path.append('src')
-from preprocess import load_data, add_features, split_data, fetch_temperature
+from preprocess import fetch_temperature
 
-# ── Load and train models on startup ─────────────────────────────────────
-print("Loading data and training models...")
-df = load_data()
-temperature = fetch_temperature('2006-01-01', '2017-12-31')
-data = add_features(df, temperature)
-train_data, test_data, features, target = split_data(data)
+# load saved models from train.py
+MODELS_DIR = 'models'
 
-X_train = train_data[features]
-y_train = train_data[target]
+if not os.path.exists(os.path.join(MODELS_DIR, 'knn.joblib')):
+    print("ERROR: No saved models found. Run 'python3 src/train.py' first.")
+    sys.exit(1)
 
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-
-knn = KNeighborsRegressor(n_neighbors=10)
-knn.fit(X_train_scaled, y_train)
-
-mlp = MLPRegressor(hidden_layer_sizes=(64, 32), activation='relu',
-                   max_iter=2000, random_state=42)
-mlp.fit(X_train_scaled, y_train)
-
-full_data = pd.concat([train_data, test_data])
+print("Loading saved models...")
+knn = joblib.load(os.path.join(MODELS_DIR, 'knn.joblib'))
+mlp = joblib.load(os.path.join(MODELS_DIR, 'mlp.joblib'))
+scaler = joblib.load(os.path.join(MODELS_DIR, 'scaler.joblib'))
+full_data = pd.read_parquet(os.path.join(MODELS_DIR, 'full_data.parquet'))
 de_holidays = holidays.Germany()
-print("Models ready.")
+print("Models loaded.")
 
 
-# ── Baseline model ────────────────────────────────────────────────────────
 def dow_average_baseline(date, full_data, n_weeks=5, decay=0.85):
     dow = date.dayofweek
     month = date.month
@@ -51,14 +40,12 @@ def dow_average_baseline(date, full_data, n_weeks=5, decay=0.85):
     return float(np.average(last_n['Consumption'].values, weights=weights))
 
 
-# ── Plausibility check ────────────────────────────────────────────────────
 def check_plausibility(date, prediction, full_data, special_event,
                        request_lag_1, threshold=0.20, n_weeks=8):
     dow = date.dayofweek
     is_weekend = dow >= 5
     is_holiday = date in de_holidays
 
-    # validate input lag values — always flag regardless of special_event
     historical_mean = full_data[
         (full_data.index.dayofweek == dow) &
         (full_data.index.month == date.month)
@@ -68,14 +55,13 @@ def check_plausibility(date, prediction, full_data, special_event,
     if lag_deviation > 50:
         return {
             "is_plausible": bool(False),
-            "warning": f"data issue — lag_1 deviates {round(lag_deviation, 1)}% from historical mean. check input data pipeline",
+            "warning": f"data issue - lag_1 deviates {round(lag_deviation, 1)}% from historical mean. check input data pipeline",
             "expected_range": [round(historical_mean * 0.5, 2), round(historical_mean * 1.5, 2)],
             "deviation_pct": round(lag_deviation, 1),
             "special_event_mode": bool(special_event),
             "data_issue": bool(True)
         }
 
-    # check prediction against historical same weekday + month
     same_dow = full_data[
         (full_data.index.dayofweek == dow) &
         (full_data.index.month == date.month) &
@@ -99,9 +85,8 @@ def check_plausibility(date, prediction, full_data, special_event,
     deviation_pct = round(abs(prediction - mean_val) / mean_val * 100, 1)
     is_plausible = bool(lower <= prediction <= upper)
 
-    # special_event suppresses prediction warning but not data issues
     if special_event:
-        warning = "special event flagged — prediction plausibility check suppressed"
+        warning = "special event flagged - prediction plausibility check suppressed"
         is_plausible = bool(True)
     elif not is_plausible:
         day_type = "holiday" if is_holiday else "weekend" if is_weekend else "weekday"
@@ -120,71 +105,6 @@ def check_plausibility(date, prediction, full_data, special_event,
     }
 
 
-# ── API ───────────────────────────────────────────────────────────────────
-app = FastAPI()
-
-
-class PredictionRequest(BaseModel):
-    date: str
-    lag_1: float
-    lag_7: float
-    special_event: bool = False
-    model: str = "knn"  # options: "knn", "mlp", "baseline", "all"
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.post("/predict")
-def predict(request: PredictionRequest):
-    date = pd.Timestamp(request.date)
-
-    # fetch live temperature
-    temp_df = fetch_temperature(request.date, request.date)
-    temp = float(temp_df['temperature'].values[0])
-
-    is_holiday = int(date in de_holidays)
-    rolling_7 = (request.lag_1 + request.lag_7) / 2
-
-    X = np.array([[
-        date.dayofweek,
-        date.month,
-        int(date.dayofweek >= 5),
-        is_holiday,
-        temp,
-        request.lag_1,
-        request.lag_7,
-        rolling_7
-    ]])
-    X_scaled = scaler.transform(X)
-
-    # get predictions based on model selection
-    predictions = {}
-    if request.model in ("knn", "all"):
-        predictions["knn"] = round(float(knn.predict(X_scaled)[0]), 2)
-    if request.model in ("mlp", "all"):
-        predictions["mlp"] = round(float(mlp.predict(X_scaled)[0]), 2)
-    if request.model in ("baseline", "all"):
-        predictions["baseline"] = round(dow_average_baseline(date, full_data), 2)
-
-    # use selected model for plausibility, default to knn
-    reference_pred = predictions.get(request.model) or predictions.get("knn")
-
-    plausibility = check_plausibility(
-        date, reference_pred, full_data, request.special_event, request.lag_1
-    )
-
-    return {
-        "date": request.date,
-        "model": request.model,
-        "predictions_gwh": predictions,
-        "temperature_c": round(temp, 1),
-        "is_holiday": is_holiday,
-        "plausibility": plausibility
-    }
-# ── API ───────────────────────────────────────────────────────────────────
 app = FastAPI()
 
 
@@ -209,17 +129,24 @@ def predict(request: PredictionRequest):
     temp = float(temp_df['temperature'].values[0])
 
     is_holiday = int(date in de_holidays)
+    is_weekend = int(date.dayofweek >= 5)
     rolling_7 = (request.lag_1 + request.lag_7) / 2
+
+    # interaction features
+    holiday_temp = is_holiday * temp
+    weekend_temp = is_weekend * temp
 
     X = np.array([[
         date.dayofweek,
         date.month,
-        int(date.dayofweek >= 5),
+        is_weekend,
         is_holiday,
         temp,
         request.lag_1,
         request.lag_7,
-        rolling_7
+        rolling_7,
+        holiday_temp,
+        weekend_temp
     ]])
     X_scaled = scaler.transform(X)
 
