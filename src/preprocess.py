@@ -9,9 +9,11 @@ def load_data(path='data/raw/opsd_germany_daily.csv'):
 
 def fetch_temperature(start_date, end_date):
     """
-    Fetch daily mean temperature for Berlin from Open-Meteo historical API.
-    Free, no API key needed.
+    Fetch daily mean temperature for Berlin from Open-Meteo.
+    Uses the historical archive API for past dates and the forecast API
+    for future dates. Falls back to a sensible default if either fails.
     """
+    # Try archive API first (works for past dates)
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
         "latitude": 52.52,
@@ -21,12 +23,51 @@ def fetch_temperature(start_date, end_date):
         "daily": "temperature_2m_mean",
         "timezone": "Europe/Berlin"
     }
-    response = requests.get(url, params=params)
-    data = response.json()
-    
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+
+        if 'daily' in data and data['daily'].get('time'):
+            temp_df = pd.DataFrame({
+                'date': pd.to_datetime(data['daily']['time']),
+                'temperature': data['daily']['temperature_2m_mean']
+            })
+            temp_df = temp_df.set_index('date')
+            return temp_df
+    except Exception:
+        pass
+
+    # Try forecast API for future/recent dates
+    try:
+        forecast_url = "https://api.open-meteo.com/v1/forecast"
+        forecast_params = {
+            "latitude": 52.52,
+            "longitude": 13.41,
+            "daily": "temperature_2m_mean",
+            "timezone": "Europe/Berlin",
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+        response = requests.get(forecast_url, params=forecast_params, timeout=10)
+        data = response.json()
+
+        if 'daily' in data and data['daily'].get('time'):
+            temp_df = pd.DataFrame({
+                'date': pd.to_datetime(data['daily']['time']),
+                'temperature': data['daily']['temperature_2m_mean']
+            })
+            temp_df = temp_df.set_index('date')
+            return temp_df
+    except Exception:
+        pass
+
+    # Fallback: return a reasonable default for Germany (~8°C annual average)
+    print(f"Warning: Could not fetch temperature for {start_date} to {end_date}, using default 8.0°C")
+    date_range = pd.date_range(start_date, end_date)
     temp_df = pd.DataFrame({
-        'date': pd.to_datetime(data['daily']['time']),
-        'temperature': data['daily']['temperature_2m_mean']
+        'date': date_range,
+        'temperature': [8.0] * len(date_range)
     })
     temp_df = temp_df.set_index('date')
     return temp_df

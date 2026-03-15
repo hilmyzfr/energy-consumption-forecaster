@@ -1,169 +1,84 @@
 # Energy Consumption Forecaster
 
-Forecasting daily electricity consumption for Germany using Open Power System Data.
-I built this to sharpen the forecasting skills I developed at enercity, where I worked
-on consumption models across a portfolio of several thousand industrial customers.
+Forecasting daily electricity consumption for Germany using machine learning.
+Built to practice forecasting methods I used at enercity, where I worked on consumption
+models across a portfolio of several thousand customers.
 
 ## What it does
 
-Send a date and recent consumption values — the API returns a predicted consumption
-in GWh. Temperature is fetched live from Open-Meteo, and German public holidays are
-checked automatically.
+- **Predict** daily electricity consumption via a FastAPI endpoint
+- **Auto-fetch** live grid data from SMARD (Bundesnetzagentur) and weather from Open-Meteo
+- **Chat** with the forecaster in natural language using a LangChain agent
+- **Flag** suspicious predictions with automated plausibility checks
 
-Every prediction also runs a plausibility check. At enercity we reviewed hundreds of
-customer model outputs daily by hand. This automates that process and only surfaces
-the ones worth looking at.
+## Data
 
-## Dataset
+Training combines two sources automatically — no manual download needed:
 
-Open Power System Data — daily electricity consumption for Germany, 2012–2017.
-Source: https://open-power-system-data.org
+- **OPSD** — daily consumption 2006–2017 ([open-power-system-data.org](https://open-power-system-data.org))
+- **SMARD** — live daily grid load 2018–present, streamed via API ([smard.de](https://www.smard.de))
+
+Running `python3 src/train.py` fetches the latest SMARD data, merges it with OPSD,
+and trains on ~7,300+ rows.
 
 ## Models
 
-Three models compared on 2017 holdout data (365 days):
+Trained on 2006–2024, tested on 2025:
 
-1. **Day-of-week baseline** — weighted average of the last 5 same-weekday, same-month
-   values. More recent weeks weighted higher. Standard baseline in operational forecasting.
-2. **KNN** — k-nearest neighbours on time, lag and weather features.
-3. **MLP** — two-layer neural network with the same feature set.
+| Model | MAE | RMSE |
+| --- | --- | --- |
+| Day-of-week baseline | 48 GWh | 78 GWh |
+| KNN | 24 GWh | 33 GWh |
+| MLP | 21 GWh | 31 GWh |
 
-## Results
+KNN is the production model — fast to train, near instant inference, and close to MLP accuracy.
 
-| Model | MAE | RMSE | Train time | Inference |
-|---|---|---|---|---|
-| Day-of-week baseline | 48 GWh | 78 GWh | - | 0.11s |
-| KNN | 25 GWh | 35 GWh | 0.02s | 0.006s |
-| MLP | 20 GWh | 32 GWh | 1.85s | ~0s |
+### Christmas Day validation (vs actual SMARD data)
 
-KNN runs in the API — fast to train, near-instant inference, and only slightly behind
-MLP on accuracy. Adding temperature and holiday features dropped MAE from 29 to 25
-compared to time and lag features alone.
+| Year | Predicted | Actual | Error | Temp |
+| --- | --- | --- | --- | --- |
+| 2023 | 1,073 GWh | 1,077 GWh | -0.4% | 9.3°C |
+| 2024 | 1,071 GWh | 1,073 GWh | -0.2% | 2.5°C |
+| 2025 | 1,072 GWh | 1,160 GWh | -7.6% | -7.1°C |
 
-## Model Explainability
+## LangChain agent
 
-SHAP and LIME explain individual predictions (`src/explain.py`):
+A conversational layer over the API. Ask in natural language instead of crafting JSON:
 
-- SHAP KernelExplainer — global feature importance and per-prediction waterfall plots
-- LIME — local surrogate explanations as a cross-check
+```
+You: What's the forecast for next Friday?
 
-### SHAP Summary Plot
-![SHAP Summary](reports/shap_summary.png)
-
-### SHAP Waterfall Plot
-![SHAP Waterfall](reports/shap_waterfall.png)
-
-### LIME Explanation
-![LIME](reports/lime_explanation.png)
-
-## Data Pipeline
-
-Built with dbt on DuckDB for local development:
-
-- `stg_energy` — staging view for raw consumption data
-- `stg_weather` — staging view for weather data
-- `fct_energy_features` — mart table with all engineered features
-- 16 data quality tests covering nulls, uniqueness and accepted values
-
-Feature engineering is also implemented in PySpark (`src/spark_features.py`) to
-handle larger datasets and mirror production pipeline patterns.
-
-## Features used
-
-- Day of week, month, is_weekend
-- is_holiday (German public holidays)
-- temperature (live from Open-Meteo)
-- lag_1 — yesterday's consumption
-- lag_7 — same day last week
-- rolling_7 — 7-day rolling average
-
-## API
-
-- `GET /health` — check if the service is running
-- `POST /predict` — get a prediction with plausibility check
-
-### Request
-```json
-{
-  "date": "2024-03-08",
-  "lag_1": 1350.0,
-  "lag_7": 1380.0,
-  "special_event": false,
-  "model": "knn"
-}
+Agent: Predicted consumption is 1,387 GWh (KNN). Using live SMARD data —
+       yesterday's actual consumption was 1,352 GWh. Plausibility check passed.
 ```
 
-`model` options: `knn`, `mlp`, `baseline`, `all`
-
-`special_event` — set to true if the customer flagged unusual consumption (shutdown,
-production surge, closure). Suppresses the prediction warning, but input checks
-still run regardless.
-
-### Response
-```json
-{
-  "date": "2024-03-08",
-  "model": "all",
-  "predictions_gwh": {
-    "knn": 1386.85,
-    "mlp": 1337.34,
-    "baseline": 1463.37
-  },
-  "temperature_c": 2.5,
-  "is_holiday": 0,
-  "plausibility": {
-    "is_plausible": true,
-    "warning": null,
-    "expected_range": [1160.93, 1741.4],
-    "deviation_pct": 4.4,
-    "special_event_mode": false,
-    "data_issue": false
-  }
-}
-```
-
-## Plausibility check
-
-Two checks run on every prediction:
-
-1. **Input check** — flags if lag_1 deviates more than 50% from the historical mean
-   for that weekday and month. Usually signals a data pipeline issue. Always runs,
-   cannot be suppressed.
-2. **Prediction check** — flags if the output deviates more than 20% from recent
-   same-weekday values. Suppressed if special_event is true.
+The agent fetches real-time lag values from SMARD automatically, so predictions
+use actual current grid data.
 
 ## How to run
 
-**Train models:**
 ```bash
+# Train (auto-fetches latest SMARD data)
 pip install -r requirements.txt
 python3 src/train.py
-```
 
-**Run dbt pipeline:**
-```bash
-cd dbt_energy
-dbt run
-dbt test
-```
-
-**Run API locally:**
-```bash
+# Start API
 uvicorn src.api:app --reload
-```
 
-**Run with Docker:**
-```bash
-docker build -t energy-forecaster .
-docker run -p 8000:8000 energy-forecaster
+# Start LangChain agent (separate terminal)
+pip install -r langchain_agent/requirements-langchain.txt
+export ANTHROPIC_API_KEY=sk-ant-...
+cd langchain_agent && python3 agent.py
 ```
 
 ## Stack
 
-Python · Scikit-learn · PySpark · dbt · DuckDB · FastAPI · Docker · SHAP · LIME · Open-Meteo API
+Python, Pandas, Scikit-learn, FastAPI, LangChain, LangGraph, Streamlit,
+Open-Meteo API, SMARD API, Docker
 
 ## Next steps
 
-- LLM email parser to extract special event flags from customer notifications automatically
-- Streamlit dashboard for visualising predictions and plausibility flags
-- GitHub Actions for automated testing
+- LLM email parser to auto-extract special events from customer notifications
+- RAG over energy documentation for contextual Q&A
+- Temperature-holiday interaction feature for cold holiday predictions
+- Drift monitoring and automated retraining via GitHub Actions
