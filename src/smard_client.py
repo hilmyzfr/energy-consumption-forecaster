@@ -100,7 +100,6 @@ def fetch_consumption(start_date, end_date, resolution="day"):
     Returns:
         DataFrame with columns: date, Consumption (in GWh)
     """
-    print(f"Fetching SMARD consumption data: {start_date} to {end_date}...")
 
     timestamps = _get_available_timestamps(resolution)
     if not timestamps:
@@ -136,7 +135,6 @@ def fetch_consumption(start_date, end_date, resolution="day"):
     # Remove duplicates and sort
     df = df.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
 
-    print(f"  Retrieved {len(df)} data points")
     return df
 
 
