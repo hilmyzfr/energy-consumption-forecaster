@@ -73,6 +73,7 @@ Adjusted forecast + plausibility result
 ### Example
 
 Input email (German):
+
 Betreff: Betriebsunterbrechung März
 Wir möchten Sie informieren, dass unser Werk vom 10.03. bis 12.03.
 aufgrund von Wartungsarbeiten vollständig abgeschaltet wird.
